@@ -3,6 +3,7 @@ import { Campaign, KOL, KOLPlatform, KOLStatus, Influencer, SocialAccount } from
 import { Search, Plus, Phone, Calendar as CalendarIcon, FileEdit, Trash2, Mail, MapPin, MessageSquare, ExternalLink, Filter, TrendingUp, CheckCircle, Clock, Link as LinkIcon, AlertCircle, ChevronDown, Check, ChevronsUpDown, Instagram, Youtube, Facebook } from "lucide-react";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
