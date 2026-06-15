@@ -1,6 +1,7 @@
+import "dotenv/config";
 import express from "express";
 import path from "path";
-import dotenv from "dotenv";
+
 import { createServer as createViteServer } from "vite";
 import { GoogleGenAI, Type } from "@google/genai";
 import { initializeDatabase, getAllKOLs, addKOL, updateKOL, deleteKOL,
@@ -9,7 +10,7 @@ import { initializeDatabase, getAllKOLs, addKOL, updateKOL, deleteKOL,
   updateInfluencer,
   deleteInfluencer, getAllCampaigns, addCampaign, updateCampaign, deleteCampaign } from "./src/kolRepository";
 
-dotenv.config();
+
 
 // Initialize the GoogleGenAI instance server-side
 // User-Agent: 'aistudio-build' is required for telemetry
