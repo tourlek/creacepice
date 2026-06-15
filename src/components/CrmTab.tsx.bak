@@ -1,0 +1,789 @@
+import React, { useState, useMemo } from "react";
+import { KOL, KOLPlatform, KOLStatus, Campaign } from "../types";
+import { format, parseISO } from "date-fns";
+import { cn } from "@/lib/utils";
+import { 
+  Plus, Search, TrendingUp, Users, DollarSign, AlertTriangle, Award,
+  Edit, Trash2, Tag, ExternalLink, Calendar as CalendarIcon, Briefcase, MapPin, Mail, Phone, MessageCircle
+} from "lucide-react";
+
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Calendar } from "@/components/ui/calendar";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+
+interface CrmTabProps {
+  kols: KOL[];
+  campaigns: Campaign[];
+  onUpdateKOL: (updated: KOL) => void;
+  onAddKOL: (newKOL: KOL) => void;
+  onDeleteKOL: (id: string) => void;
+}
+
+export default function CrmTab({ kols, campaigns, onUpdateKOL, onAddKOL, onDeleteKOL }: CrmTabProps) {
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedFilter, setSelectedFilter] = useState<"all" | "recommend" | "blacklisted">("all");
+  const [selectedCampaignId, setSelectedCampaignId] = useState<string>("all");
+  
+  // Modal states
+  const [modalMode, setModalMode] = useState<"add" | "edit" | null>(null);
+  const [editingKOLId, setEditingKOLId] = useState<string | null>(null);
+  const [profileSource, setProfileSource] = useState<"new" | "existing">("new");
+
+  // Form states - Master Data
+  const [formName, setFormName] = useState("");
+  const [formNickname, setFormNickname] = useState("");
+  const [formPlatform, setFormPlatform] = useState<KOLPlatform>(KOLPlatform.TIKTOK);
+  const [formFollowers, setFormFollowers] = useState<number>(100000);
+  const [formPhone, setFormPhone] = useState("");
+  const [formEmail, setFormEmail] = useState("");
+  const [formLineId, setFormLineId] = useState("");
+  const [formAddress, setFormAddress] = useState("");
+  const [formProfileUrl, setFormProfileUrl] = useState("");
+  const [formRemark, setFormRemark] = useState("");
+  const [formConditions, setFormConditions] = useState("");
+  const [formBaseClientPrice, setFormBaseClientPrice] = useState<number>(15000);
+  const [formBaseNetCost, setFormBaseNetCost] = useState<number>(12000);
+  const [formInfluencerId, setFormInfluencerId] = useState("");
+
+  // Form states - Campaign specific
+  const [formCampaignId, setFormCampaignId] = useState("");
+  const [formStatus, setFormStatus] = useState<KOLStatus>(KOLStatus.CONTRACT);
+  const [formClientPrice, setFormClientPrice] = useState<number>(15000);
+  const [formNetCost, setFormNetCost] = useState<number>(12000);
+  const [formDraftDeadline, setFormDraftDeadline] = useState<Date | undefined>(new Date(Date.now() + 5 * 24 * 60 * 60 * 1000));
+  const [formLiveDeadline, setFormLiveDeadline] = useState<Date | undefined>(new Date(Date.now() + 10 * 24 * 60 * 60 * 1000));
+  const [formDraftLink, setFormDraftLink] = useState("");
+  const [formLiveLink, setFormLiveLink] = useState("");
+
+  const formatBaht = (amount: number) => {
+    return new Intl.NumberFormat("th-TH", {
+      style: "currency",
+      currency: "THB",
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    }).format(amount);
+  };
+
+  const formatFollowers = (count: number) => {
+    if (count >= 1000000) return `${(count / 1000000).toFixed(1)}M`;
+    if (count >= 1000) return `${(count / 1000).toFixed(0)}K`;
+    return count.toString();
+  };
+
+  const uniqueInfluencers = useMemo(() => {
+    return Array.from(
+      new Map(
+        kols
+          .filter(k => k.influencerId || k.name)
+          .map(k => [k.influencerId || k.name, k])
+      ).values()
+    );
+  }, [kols]);
+
+  const filteredKols = useMemo(() => {
+    return kols.filter((k) => {
+      const matchText = [k.name, k.nickname, k.phone, k.lineId, k.behavioralRemark].join(" ").toLowerCase();
+      const matchesSearch = matchText.includes(searchQuery.toLowerCase());
+      if (!matchesSearch) return false;
+      if (selectedCampaignId !== "all" && k.campaignId !== selectedCampaignId) return false;
+
+      if (selectedFilter === "recommend") {
+        return k.followers >= 100000 && k.clientPrice <= 25000;
+      }
+      if (selectedFilter === "blacklisted") {
+        return k.behavioralRemark.toLowerCase().includes("blacklist") || 
+               k.dealConditions.toLowerCase().includes("blacklist");
+      }
+      return true;
+    });
+  }, [kols, searchQuery, selectedCampaignId, selectedFilter]);
+
+  const totalClientBilling = filteredKols.reduce((sum, k) => sum + k.clientPrice, 0);
+  const totalNetCost = filteredKols.reduce((sum, k) => sum + k.netCost, 0);
+  const agencyNetProfit = totalClientBilling - totalNetCost;
+  const marginPercentage = totalClientBilling > 0 ? (agencyNetProfit / totalClientBilling) * 100 : 0;
+  
+  const recommendedCount = filteredKols.filter(k => k.followers >= 100000 && k.clientPrice <= 25000).length;
+  const blacklistedCount = filteredKols.filter(k => 
+    k.behavioralRemark.toLowerCase().includes("blacklist") || 
+    k.dealConditions.toLowerCase().includes("blacklist")
+  ).length;
+
+  const handleOpenAdd = () => {
+    setModalMode("add");
+    setProfileSource("new");
+    setEditingKOLId(null);
+    setFormName("");
+    setFormNickname("");
+    setFormPlatform(KOLPlatform.TIKTOK);
+    setFormFollowers(100000);
+    setFormPhone("");
+    setFormEmail("");
+    setFormLineId("");
+    setFormAddress("");
+    setFormProfileUrl("");
+    setFormRemark("");
+    setFormConditions("");
+    setFormBaseClientPrice(15000);
+    setFormBaseNetCost(12000);
+
+    setFormCampaignId(campaigns[0]?.id || "");
+    setFormStatus(KOLStatus.CONTRACT);
+    setFormClientPrice(15000);
+    setFormNetCost(12000);
+    setFormDraftDeadline(new Date(Date.now() + 5 * 24 * 60 * 60 * 1000));
+    setFormLiveDeadline(new Date(Date.now() + 10 * 24 * 60 * 60 * 1000));
+    setFormDraftLink("");
+    setFormLiveLink("");
+    setFormInfluencerId("");
+  };
+
+  const handleOpenEdit = (kol: KOL) => {
+    setModalMode("edit");
+    setEditingKOLId(kol.id);
+    
+    // Master data
+    setFormName(kol.name);
+    setFormNickname(kol.nickname || "");
+    setFormPlatform(kol.platform);
+    setFormFollowers(kol.followers);
+    setFormPhone(kol.phone || "");
+    setFormEmail(kol.email || "");
+    setFormLineId(kol.lineId || "");
+    setFormAddress(kol.address || "");
+    setFormProfileUrl(kol.profileUrl || "");
+    setFormRemark(kol.behavioralRemark || "");
+    setFormConditions(kol.dealConditions || "");
+    setFormBaseClientPrice(kol.baseClientPrice || kol.clientPrice);
+    setFormBaseNetCost(kol.baseNetCost || kol.netCost);
+    setFormInfluencerId(kol.influencerId || "");
+
+    // Campaign data
+    setFormCampaignId(kol.campaignId || campaigns[0]?.id || "");
+    setFormStatus(kol.status);
+    setFormClientPrice(kol.clientPrice);
+    setFormNetCost(kol.netCost);
+    setFormDraftDeadline(kol.draftDeadline ? parseISO(kol.draftDeadline) : undefined);
+    setFormLiveDeadline(kol.liveDeadline ? parseISO(kol.liveDeadline) : undefined);
+    setFormDraftLink(kol.draftLink || "");
+    setFormLiveLink(kol.liveLink || "");
+  };
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formName) return;
+
+    const draftStr = formDraftDeadline ? format(formDraftDeadline, "yyyy-MM-dd") : "";
+    const liveStr = formLiveDeadline ? format(formLiveDeadline, "yyyy-MM-dd") : "";
+
+    const kolData: KOL = {
+      id: modalMode === "edit" && editingKOLId ? editingKOLId : "",
+      name: formName,
+      nickname: formNickname,
+      platform: formPlatform,
+      followers: formFollowers,
+      phone: formPhone,
+      email: formEmail,
+      lineId: formLineId,
+      address: formAddress,
+      profileUrl: formProfileUrl,
+      behavioralRemark: formRemark,
+      dealConditions: formConditions,
+      baseClientPrice: formBaseClientPrice,
+      baseNetCost: formBaseNetCost,
+      
+      campaignId: formCampaignId,
+      status: formStatus,
+      clientPrice: formClientPrice,
+      netCost: formNetCost,
+      profit: formClientPrice - formNetCost,
+      draftDeadline: draftStr,
+      liveDeadline: liveStr,
+      draftLink: formDraftLink,
+      liveLink: formLiveLink,
+      
+      influencerId: modalMode === "add" && profileSource === "existing" ? formInfluencerId : (formInfluencerId || undefined),
+    };
+
+    if (modalMode === "add") {
+      onAddKOL(kolData);
+    } else if (modalMode === "edit") {
+      onUpdateKOL(kolData);
+    }
+    setModalMode(null);
+  };
+
+  return (
+    <div className="space-y-10 animate-in fade-in slide-in-from-bottom-4 duration-500 w-full">
+      
+      {/* Header Panel */}
+      <header className="flex flex-col md:flex-row justify-between items-start md:items-end gap-6 border-b pb-6">
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <Badge variant="secondary" className="bg-blue-100 text-blue-800 text-[10px] font-black uppercase tracking-wider">
+              Workspace
+            </Badge>
+            <span className="text-muted-foreground text-xs font-medium">Real-time Campaign Ledger</span>
+          </div>
+          <h1 className="text-3xl font-black tracking-tight">
+            Influencer CRM Tracker
+          </h1>
+          <p className="text-sm text-muted-foreground font-medium">
+            บริหารจัดการข้อมูล ตารางงาน ดีล และค่าสถิติการเงินของแคมเปญ
+          </p>
+        </div>
+
+        <Button onClick={handleOpenAdd} className="gap-2 shadow-lg shadow-primary/20 shrink-0 h-11 px-6">
+          <Plus className="w-4 h-4" />
+          Add KOL Assignment
+        </Button>
+      </header>
+
+      {/* Stats Cards Row */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <Card className="relative overflow-hidden group">
+          <div className="absolute top-0 right-0 w-32 h-32 bg-blue-50/50 rounded-bl-full pointer-events-none group-hover:scale-110 transition-transform" />
+          <CardContent className="p-6 relative z-10 flex justify-between items-start">
+            <div>
+              <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2">Brand Billing</p>
+              <h3 className="text-3xl font-black tabular-numbers tracking-tight">{formatBaht(totalClientBilling)}</h3>
+            </div>
+            <div className="w-10 h-10 rounded-xl bg-blue-50 flex items-center justify-center text-blue-600">
+              <DollarSign className="w-5 h-5" />
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="relative overflow-hidden group">
+          <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-50/50 rounded-bl-full pointer-events-none group-hover:scale-110 transition-transform" />
+          <CardContent className="p-6 relative z-10 flex justify-between items-start">
+            <div>
+              <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2">Agency Net Profit</p>
+              <h3 className="text-3xl font-black tabular-numbers tracking-tight">{formatBaht(agencyNetProfit)}</h3>
+              <div className="mt-2 text-[11px] text-emerald-700 font-bold px-2 py-0.5 bg-emerald-50 rounded-md w-fit inline-block">
+                Margin: {marginPercentage.toFixed(1)}%
+              </div>
+            </div>
+            <div className="w-10 h-10 rounded-xl bg-emerald-50 flex items-center justify-center text-emerald-600">
+              <TrendingUp className="w-5 h-5" />
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="relative overflow-hidden group">
+          <div className="absolute top-0 right-0 w-32 h-32 bg-amber-50/50 rounded-bl-full pointer-events-none group-hover:scale-110 transition-transform" />
+          <CardContent className="p-6 relative z-10 flex justify-between items-start">
+            <div>
+              <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2">Top Performers</p>
+              <h3 className="text-3xl font-black tracking-tight">{recommendedCount}</h3>
+              <p className="text-[11px] font-medium text-muted-foreground mt-2">Followers &gt; 100K</p>
+            </div>
+            <div className="w-10 h-10 rounded-xl bg-amber-50 flex items-center justify-center text-amber-600">
+              <Award className="w-5 h-5" />
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="relative overflow-hidden group">
+          <div className="absolute top-0 right-0 w-32 h-32 bg-rose-50/50 rounded-bl-full pointer-events-none group-hover:scale-110 transition-transform" />
+          <CardContent className="p-6 relative z-10 flex justify-between items-start">
+            <div>
+              <p className="text-xs font-bold text-muted-foreground uppercase tracking-wider mb-2">High Risk Profiles</p>
+              <h3 className="text-3xl font-black tracking-tight">{blacklistedCount}</h3>
+              {blacklistedCount > 0 && <p className="text-[11px] font-bold text-rose-600 mt-2 flex items-center gap-1"><AlertTriangle className="w-3 h-3"/> Action Needed</p>}
+            </div>
+            <div className="w-10 h-10 rounded-xl bg-rose-50 flex items-center justify-center text-rose-600">
+              <AlertTriangle className="w-5 h-5" />
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+
+      {/* Spreadsheet Section */}
+      <Card className="overflow-hidden flex flex-col border-border/50 w-full shadow-md">
+        <div className="p-5 border-b bg-muted/20 flex flex-col xl:flex-row gap-4 justify-between items-center">
+          <div className="flex flex-col sm:flex-row gap-4 w-full xl:w-auto flex-1">
+            <div className="relative flex-1 max-w-md">
+              <Search className="w-4 h-4 absolute left-3 top-3.5 text-muted-foreground" />
+              <Input
+                className="pl-9 bg-background h-11"
+                placeholder="Search name, phone, line, or remarks…"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
+            </div>
+            
+            <div className="w-full sm:w-64">
+              <Select value={selectedCampaignId} onValueChange={setSelectedCampaignId}>
+                <SelectTrigger className="">
+                  <SelectValue placeholder="All Campaigns" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Campaigns</SelectItem>
+                  {campaigns.map(c => (
+                    <SelectItem key={c.id} value={c.id}>{c.name} ({c.brand})</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+
+          <div className="flex bg-muted/50 p-1 rounded-xl w-full xl:w-auto overflow-x-auto border border-border/50">
+            <Button
+              variant="ghost" size="sm"
+              onClick={() => setSelectedFilter("all")}
+              className={`flex-1 xl:flex-none text-xs font-bold h-9 px-4 ${selectedFilter === "all" ? "bg-background shadow-sm" : "text-muted-foreground"}`}
+            >
+              All Listed
+            </Button>
+            <Button
+              variant="ghost" size="sm"
+              onClick={() => setSelectedFilter("recommend")}
+              className={`flex-1 xl:flex-none text-xs font-bold h-9 px-4 ${selectedFilter === "recommend" ? "bg-amber-50 text-amber-800 shadow-sm border border-amber-100" : "text-muted-foreground"}`}
+            >
+              Recommended
+            </Button>
+            <Button
+              variant="ghost" size="sm"
+              onClick={() => setSelectedFilter("blacklisted")}
+              className={`flex-1 xl:flex-none text-xs font-bold h-9 px-4 ${selectedFilter === "blacklisted" ? "bg-rose-50 text-rose-800 shadow-sm border border-rose-100" : "text-muted-foreground"}`}
+            >
+              Caution
+            </Button>
+          </div>
+        </div>
+
+        <div className="overflow-x-auto w-full">
+          <Table className="w-full min-w-[1000px]">
+            <TableHeader className="bg-muted/30">
+              <TableRow>
+                <TableHead className="font-bold text-xs uppercase tracking-wider">KOL Profile</TableHead>
+                <TableHead className="font-bold text-xs uppercase tracking-wider">Campaign</TableHead>
+                <TableHead className="font-bold text-xs uppercase tracking-wider text-right">Followers</TableHead>
+                <TableHead className="font-bold text-xs uppercase tracking-wider">Status</TableHead>
+                <TableHead className="font-bold text-xs uppercase tracking-wider text-right">Brand Billing</TableHead>
+                <TableHead className="font-bold text-xs uppercase tracking-wider text-right">KOL Contract</TableHead>
+                <TableHead className="font-bold text-xs uppercase tracking-wider text-right">Profit</TableHead>
+                <TableHead className="font-bold text-xs uppercase tracking-wider">Deadlines</TableHead>
+                <TableHead className="font-bold text-xs uppercase tracking-wider text-center">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {filteredKols.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={9} className="h-32 text-center text-muted-foreground">
+                    <Briefcase className="w-8 h-8 mx-auto text-muted-foreground/50 mb-3" />
+                    <p className="font-semibold text-sm">No matching KOL records found.</p>
+                  </TableCell>
+                </TableRow>
+              ) : (
+                filteredKols.map((kol) => {
+                  const campaign = campaigns.find(c => c.id === kol.campaignId);
+                  const campaignLabel = campaign ? campaign.name : "Unassigned";
+                  const brandLabel = campaign ? campaign.brand : "-";
+                  const profit = kol.clientPrice - kol.netCost;
+
+                  return (
+                    <TableRow key={kol.id} className="group hover:bg-muted/30 transition-colors">
+                      <TableCell className="py-4">
+                        <div className="flex flex-col">
+                          <div className="flex items-center gap-1.5">
+                            {kol.profileUrl ? (
+                              <a href={kol.profileUrl.startsWith('http') ? kol.profileUrl : `https://${kol.profileUrl}`} target="_blank" rel="noopener noreferrer" className="font-extrabold text-indigo-600 hover:underline flex items-center gap-1 truncate max-w-[200px]">
+                                {kol.name} {kol.nickname && `(${kol.nickname})`} <ExternalLink className="w-3 h-3 opacity-50 shrink-0" />
+                              </a>
+                            ) : (
+                              <span className="font-extrabold truncate max-w-[200px]">{kol.name} {kol.nickname && `(${kol.nickname})`}</span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 mt-1">
+                            <span className="px-1.5 py-0.5 bg-slate-800 text-white text-[9px] font-black rounded uppercase tracking-widest">{kol.platform}</span>
+                            {(kol.phone || kol.lineId) && (
+                              <span className="text-[10px] text-muted-foreground font-medium flex items-center gap-1">
+                                {kol.lineId ? <MessageCircle className="w-3 h-3"/> : <Phone className="w-3 h-3"/>}
+                                {kol.lineId || kol.phone}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </TableCell>
+                      
+                      <TableCell className="py-4">
+                        <div className="flex flex-col">
+                          <span className="text-sm font-bold truncate max-w-[150px]" title={campaignLabel}>{campaignLabel}</span>
+                          <span className="text-[11px] font-medium text-muted-foreground truncate max-w-[150px]" title={brandLabel}>{brandLabel}</span>
+                        </div>
+                      </TableCell>
+
+                      <TableCell className="py-4 text-right">
+                        <span className="font-black tabular-numbers text-sm">{formatFollowers(kol.followers)}</span>
+                      </TableCell>
+
+                      <TableCell className="py-4">
+                        <Badge variant="outline" className={`text-[10px] font-bold uppercase tracking-wider rounded-md border-transparent ${
+                          kol.status === KOLStatus.LIVE ? "bg-emerald-100 text-emerald-800" :
+                          kol.status === KOLStatus.BRAND_REVIEW ? "bg-amber-100 text-amber-800" :
+                          kol.status === KOLStatus.CONTRACT ? "bg-indigo-100 text-indigo-800" :
+                          kol.status === KOLStatus.DRAFTING ? "bg-violet-100 text-violet-800" :
+                          "bg-slate-100 text-slate-800"
+                        }`}>
+                          {kol.status.replace(/^[0-9]\.\s*/, '')}
+                        </Badge>
+                      </TableCell>
+
+                      <TableCell className="py-4 text-right">
+                        <span className="font-bold tabular-numbers text-sm">{formatBaht(kol.clientPrice)}</span>
+                      </TableCell>
+
+                      <TableCell className="py-4 text-right">
+                        <span className="font-medium text-muted-foreground tabular-numbers text-sm">{formatBaht(kol.netCost)}</span>
+                      </TableCell>
+
+                      <TableCell className="py-4 text-right">
+                        <span className={`font-black tabular-numbers text-sm ${profit >= 0 ? "text-emerald-600" : "text-rose-600"}`}>
+                          {formatBaht(profit)}
+                        </span>
+                      </TableCell>
+
+                      <TableCell className="py-4">
+                        <div className="flex flex-col gap-1 text-[11px] font-medium min-w-[120px]">
+                          <div className="flex items-center gap-1.5 text-muted-foreground">
+                            <CalendarIcon className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                            <span className="truncate">Draft: {kol.draftDeadline || "-"}</span>
+                          </div>
+                          <div className="flex items-center gap-1.5 text-muted-foreground">
+                            <CalendarIcon className="w-3.5 h-3.5 text-emerald-500 shrink-0" />
+                            <span className="truncate">Live: {kol.liveDeadline || "-"}</span>
+                          </div>
+                        </div>
+                      </TableCell>
+
+                      <TableCell className="py-4 text-center">
+                        <div className="flex items-center justify-center gap-1 opacity-100 xl:opacity-0 group-hover:opacity-100 transition-opacity">
+                          <Button variant="ghost" size="icon" onClick={() => handleOpenEdit(kol)} className="h-8 w-8 text-muted-foreground hover:text-indigo-600">
+                            <Edit className="w-4 h-4" />
+                          </Button>
+                          <Button variant="ghost" size="icon" onClick={() => onDeleteKOL(kol.id)} className="h-8 w-8 text-muted-foreground hover:text-rose-600">
+                            <Trash2 className="w-4 h-4" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
+              )}
+            </TableBody>
+          </Table>
+        </div>
+      </Card>
+
+      {/* Unified Add / Edit Modal via Shadcn Dialog */}
+      <Dialog open={modalMode !== null} onOpenChange={(open) => !open && setModalMode(null)}>
+        <DialogContent className="sm:max-w-[800px] max-h-[90vh] overflow-y-auto w-[95vw]">
+          <DialogHeader className="border-b pb-4 mb-4">
+            <DialogTitle className="flex items-center gap-3 text-xl font-black">
+              <div className="w-10 h-10 bg-indigo-50 text-indigo-600 flex items-center justify-center rounded-xl">
+                <Users className="w-5 h-5" />
+              </div>
+              {modalMode === "add" ? "Assign Influencer to Campaign" : `Edit Assignment - ${formName}`}
+            </DialogTitle>
+          </DialogHeader>
+
+          <form onSubmit={handleSubmit} className="space-y-8">
+            {/* Master Profile Source Selection (Add Mode Only) */}
+            {modalMode === "add" && uniqueInfluencers.length > 0 && (
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 space-y-4">
+                <Label className="text-xs font-black uppercase tracking-wider text-slate-800 flex items-center gap-2">
+                  <Users className="w-4 h-4 text-indigo-500" /> Master Profile Source
+                </Label>
+                <div className="flex gap-4">
+                  <label className="flex items-center gap-2 cursor-pointer bg-white px-4 py-3 border rounded-xl flex-1 hover:border-indigo-500 transition-colors shadow-sm">
+                    <input 
+                      type="radio" name="profileSource" value="new" 
+                      checked={profileSource === "new"}
+                      onChange={() => {
+                        setProfileSource("new");
+                        setFormInfluencerId("");
+                        setFormName("");
+                        setFormNickname("");
+                        setFormPhone("");
+                        setFormEmail("");
+                        setFormLineId("");
+                        setFormAddress("");
+                        setFormProfileUrl("");
+                        setFormRemark("");
+                        setFormConditions("");
+                        setFormBaseClientPrice(15000);
+                        setFormBaseNetCost(12000);
+                        setFormClientPrice(15000);
+                        setFormNetCost(12000);
+                      }}
+                      className="text-indigo-600 focus:ring-indigo-500 w-4 h-4"
+                    />
+                    <span className="text-sm font-bold">Create New Profile</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer bg-white px-4 py-3 border rounded-xl flex-1 hover:border-indigo-500 transition-colors shadow-sm">
+                    <input 
+                      type="radio" name="profileSource" value="existing" 
+                      checked={profileSource === "existing"}
+                      onChange={() => setProfileSource("existing")}
+                      className="text-indigo-600 focus:ring-indigo-500 w-4 h-4"
+                    />
+                    <span className="text-sm font-bold">Select Existing Profile</span>
+                  </label>
+                </div>
+
+                {profileSource === "existing" && (
+                  <div className="pt-2">
+                    <Select value={formInfluencerId} onValueChange={(val) => {
+                      const found = uniqueInfluencers.find(i => (i.influencerId === val || i.name === val));
+                      if (found) {
+                        setFormInfluencerId(found.influencerId || "");
+                        setFormName(found.name);
+                        setFormNickname(found.nickname || "");
+                        setFormPlatform(found.platform);
+                        setFormFollowers(found.followers);
+                        setFormPhone(found.phone || "");
+                        setFormEmail(found.email || "");
+                        setFormLineId(found.lineId || "");
+                        setFormAddress(found.address || "");
+                        setFormProfileUrl(found.profileUrl || "");
+                        setFormRemark(found.behavioralRemark || "");
+                        setFormConditions(found.dealConditions || "");
+                        setFormBaseClientPrice(found.baseClientPrice || found.clientPrice || 0);
+                        setFormBaseNetCost(found.baseNetCost || found.netCost || 0);
+                        setFormClientPrice(found.baseClientPrice || found.clientPrice || 0);
+                        setFormNetCost(found.baseNetCost || found.netCost || 0);
+                      }
+                    }}>
+                      <SelectTrigger >
+                        <SelectValue placeholder="--- Select an Influencer ---" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {uniqueInfluencers.map(i => (
+                          <SelectItem key={i.influencerId || i.name} value={i.influencerId || i.name}>
+                            {i.name} {i.nickname && `(${i.nickname})`} — {formatFollowers(i.followers)}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* SECTION: MASTER DATA */}
+            <div className="space-y-5">
+              <div className="flex items-center gap-2 border-b pb-2">
+                <Users className="w-5 h-5 text-indigo-500" />
+                <h3 className="font-extrabold text-lg text-slate-800">1. Master Profile Details</h3>
+              </div>
+              
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div className="space-y-2">
+                  <Label className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">KOL Full Name</Label>
+                  <Input
+                    required disabled={modalMode === "add" && profileSource === "existing" && !formInfluencerId}
+                    
+                    placeholder="First Last"
+                    value={formName} onChange={(e) => setFormName(e.target.value)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Nickname / AKA</Label>
+                  <Input
+                    disabled={modalMode === "add" && profileSource === "existing" && !formInfluencerId}
+                    
+                    placeholder="e.g. ตู่เล็ก"
+                    value={formNickname} onChange={(e) => setFormNickname(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-5">
+                <div className="space-y-2 lg:col-span-1">
+                  <Label className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Platform</Label>
+                  <Select value={formPlatform} onValueChange={(v) => setFormPlatform(v as KOLPlatform)}>
+                    <SelectTrigger ><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {Object.values(KOLPlatform).map(p => <SelectItem key={p} value={p}>{p}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2 lg:col-span-1">
+                  <Label className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Followers</Label>
+                  <Input
+                    type="number" required
+                    
+                    value={formFollowers} onChange={(e) => setFormFollowers(Number(e.target.value) || 0)}
+                  />
+                </div>
+                <div className="space-y-2 lg:col-span-2">
+                  <Label className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">Profile URL</Label>
+                  <Input 
+                    type="url" placeholder="https://..." 
+                    
+                    value={formProfileUrl} onChange={(e) => setFormProfileUrl(e.target.value)} 
+                  />
+                </div>
+              </div>
+
+              {/* CONTACT & DELIVERY */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+                <div className="space-y-2">
+                  <Label className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5"><Phone className="w-3.5 h-3.5"/> Phone</Label>
+                  <Input 
+                    placeholder="08X-XXX-XXXX" 
+                    
+                    value={formPhone} onChange={(e) => setFormPhone(e.target.value)} 
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5"><MessageCircle className="w-3.5 h-3.5"/> LINE ID</Label>
+                  <Input 
+                    placeholder="@lineid" 
+                    
+                    value={formLineId} onChange={(e) => setFormLineId(e.target.value)} 
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5"><Mail className="w-3.5 h-3.5"/> Email</Label>
+                  <Input 
+                    type="email" placeholder="email@example.com" 
+                    
+                    value={formEmail} onChange={(e) => setFormEmail(e.target.value)} 
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground flex items-center gap-1.5"><MapPin className="w-3.5 h-3.5"/> Delivery Address</Label>
+                <Input 
+                  placeholder="ที่อยู่สำหรับจัดส่งสินค้า..." 
+                  
+                  value={formAddress} onChange={(e) => setFormAddress(e.target.value)} 
+                />
+              </div>
+            </div>
+
+            {/* SECTION: CAMPAIGN ASSIGNMENT */}
+            <div className="space-y-5 bg-blue-50/50 p-5 rounded-xl border border-blue-100">
+              <div className="flex items-center gap-2 border-b border-blue-200 pb-2">
+                <Briefcase className="w-5 h-5 text-blue-600" />
+                <h3 className="font-extrabold text-lg text-blue-900">2. Campaign Specific Data</h3>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div className="space-y-2">
+                  <Label className="text-[11px] font-bold uppercase tracking-wider text-blue-800">Assign To Campaign</Label>
+                  <Select value={formCampaignId} onValueChange={setFormCampaignId}>
+                    <SelectTrigger >
+                      <SelectValue placeholder="Select Campaign" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {campaigns.map(c => (
+                        <SelectItem key={c.id} value={c.id}>{c.name} ({c.brand})</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-[11px] font-bold uppercase tracking-wider text-blue-800">Current Status</Label>
+                  <Select value={formStatus} onValueChange={(v) => setFormStatus(v as KOLStatus)}>
+                    <SelectTrigger ><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      {Object.values(KOLStatus).map(s => <SelectItem key={s} value={s}>{s}</SelectItem>)}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div className="space-y-2">
+                  <Label className="text-[11px] font-bold uppercase tracking-wider text-blue-800 flex items-center justify-between">
+                    <span>Brand Billing (THB)</span>
+                    <span className="text-[9px] bg-blue-200 text-blue-900 px-1.5 py-0.5 rounded">For Brand</span>
+                  </Label>
+                  <Input
+                    type="number" required
+                    
+                    value={formClientPrice} onChange={(e) => setFormClientPrice(Number(e.target.value) || 0)}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-[11px] font-bold uppercase tracking-wider text-blue-800 flex items-center justify-between">
+                    <span>KOL Contract Price (THB)</span>
+                    <span className="text-[9px] bg-amber-200 text-amber-900 px-1.5 py-0.5 rounded">For Influencer</span>
+                  </Label>
+                  <Input
+                    type="number" required
+                    
+                    value={formNetCost} onChange={(e) => setFormNetCost(Number(e.target.value) || 0)}
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div className="space-y-2 flex flex-col">
+                  <Label className="text-[11px] font-bold uppercase tracking-wider text-blue-800">Draft Deadline</Label>
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <Button variant="outline" className={cn("stripe-input w-full justify-start text-left font-normal", !formDraftDeadline && "text-muted-foreground")}>
+                        <CalendarIcon className="mr-2 h-4 w-4" />
+                        {formDraftDeadline ? format(formDraftDeadline, "PPP") : <span>Pick a date</span>}
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-auto p-0">
+                      <Calendar mode="single" selected={formDraftDeadline} onSelect={setFormDraftDeadline} initialFocus />
+                    </PopoverContent>
+                  </Popover>
+                </div>
+                <div className="space-y-2 flex flex-col">
+                  <Label className="text-[11px] font-bold uppercase tracking-wider text-blue-800">Live Deadline</Label>
+                  <Popover>
+                    <PopoverTrigger asChild>
+                      <Button variant="outline" className={cn("stripe-input w-full justify-start text-left font-normal", !formLiveDeadline && "text-muted-foreground")}>
+                        <CalendarIcon className="mr-2 h-4 w-4" />
+                        {formLiveDeadline ? format(formLiveDeadline, "PPP") : <span>Pick a date</span>}
+                      </Button>
+                    </PopoverTrigger>
+                    <PopoverContent className="w-auto p-0">
+                      <Calendar mode="single" selected={formLiveDeadline} onSelect={setFormLiveDeadline} initialFocus />
+                    </PopoverContent>
+                  </Popover>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div className="space-y-2">
+                  <Label className="text-[11px] font-bold uppercase tracking-wider text-blue-800">Draft Link</Label>
+                  <Input type="url" placeholder="https://..."  value={formDraftLink} onChange={(e) => setFormDraftLink(e.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <Label className="text-[11px] font-bold uppercase tracking-wider text-blue-800">Live Link</Label>
+                  <Input type="url" placeholder="https://..."  value={formLiveLink} onChange={(e) => setFormLiveLink(e.target.value)} />
+                </div>
+              </div>
+            </div>
+
+            <div className="pt-4 flex gap-3 border-t">
+              <Button type="button" variant="ghost" onClick={() => setModalMode(null)} className="flex-1 h-11">
+                Cancel
+              </Button>
+              <Button type="submit" className="flex-[2] shadow-lg shadow-primary/20 h-11 text-sm font-bold">
+                {modalMode === "add" ? "Save Assignment" : "Update Assignment"}
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}

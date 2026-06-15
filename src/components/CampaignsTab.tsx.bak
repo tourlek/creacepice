@@ -1,0 +1,193 @@
+import React, { useState } from "react";
+import { Campaign } from "../types";
+import { Plus, Edit, Trash2, Tag, Briefcase } from "lucide-react";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+
+interface CampaignsTabProps {
+  campaigns: Campaign[];
+  setCampaigns: React.Dispatch<React.SetStateAction<Campaign[]>>;
+}
+
+export default function CampaignsTab({ campaigns, setCampaigns }: CampaignsTabProps) {
+  const [modalMode, setModalMode] = useState<"add" | "edit" | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [formName, setFormName] = useState("");
+  const [formBrand, setFormBrand] = useState("");
+
+  const handleOpenAdd = () => {
+    setModalMode("add");
+    setEditingId(null);
+    setFormName("");
+    setFormBrand("");
+  };
+
+  const handleOpenEdit = (camp: Campaign) => {
+    setModalMode("edit");
+    setEditingId(camp.id);
+    setFormName(camp.name);
+    setFormBrand(camp.brand);
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!window.confirm("คุณแน่ใจหรือไม่ที่จะลบแคมเปญนี้? ข้อมูลการมอบหมายงานในแคมเปญนี้จะยังคงอยู่แต่หาอ้างอิงแคมเปญไม่ได้")) return;
+    try {
+      const response = await fetch(`/api/campaigns/${id}`, { method: "DELETE" });
+      if (response.ok) {
+        setCampaigns((prev) => prev.filter((c) => c.id !== id));
+      }
+    } catch (err) {
+      console.error("Error deleting campaign:", err);
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!formName || !formBrand) return;
+
+    if (modalMode === "add") {
+      try {
+        const response = await fetch("/api/campaigns", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: formName, brand: formBrand }),
+        });
+        if (response.ok) {
+          const saved = await response.json();
+          setCampaigns((prev) => [saved, ...prev]);
+        }
+      } catch (err) {
+        console.error("Error adding campaign:", err);
+      }
+    } else if (modalMode === "edit" && editingId) {
+      try {
+        const response = await fetch(`/api/campaigns/${editingId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: formName, brand: formBrand }),
+        });
+        if (response.ok) {
+          const saved = await response.json();
+          setCampaigns((prev) => prev.map((c) => (c.id === editingId ? saved : c)));
+        }
+      } catch (err) {
+        console.error("Error updating campaign:", err);
+      }
+    }
+    setModalMode(null);
+  };
+
+  return (
+    <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
+      <header className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 border-b pb-5">
+        <div>
+          <div className="flex items-center gap-2 mb-1.5">
+            <Badge variant="secondary" className="bg-indigo-100 text-indigo-800 text-[10px] font-black uppercase tracking-wider">
+              Ecosystem
+            </Badge>
+            <span className="text-muted-foreground text-xs">•</span>
+            <span className="text-muted-foreground text-xs font-semibold">Master Data</span>
+          </div>
+          <h1 className="text-3xl font-extrabold tracking-tight leading-none">
+            Brands & Campaigns
+          </h1>
+          <p className="text-sm text-muted-foreground mt-2 font-medium">
+            จัดการแบรนด์และแคมเปญ เพื่อนำไปใช้งานต่อในตารางมอบหมายงาน KOL
+          </p>
+        </div>
+        <Button onClick={handleOpenAdd} className="gap-2 shadow-lg shadow-primary/20">
+          <Plus className="w-4 h-4" />
+          New Campaign
+        </Button>
+      </header>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+        {campaigns.map((camp) => (
+          <Card key={camp.id} className="group relative overflow-hidden transition-all hover:shadow-md border-border/50 bg-background/50 backdrop-blur-sm">
+            <div className="absolute top-0 right-0 w-24 h-24 bg-gradient-to-bl from-indigo-500/10 to-transparent opacity-50 rounded-bl-full pointer-events-none" />
+            <CardContent className="p-6 relative z-10">
+              <div className="flex justify-between items-start mb-6">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-indigo-50 flex items-center justify-center text-indigo-600">
+                    <Briefcase className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <h3 className="font-extrabold text-lg leading-tight">{camp.name}</h3>
+                    <div className="flex items-center gap-1.5 text-sm text-muted-foreground font-medium mt-1">
+                      <Tag className="w-3.5 h-3.5" />
+                      <span>{camp.brand}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="flex gap-2 pt-4 border-t border-border/50 mt-auto">
+                <Button variant="outline" size="sm" onClick={() => handleOpenEdit(camp)} className="flex-1 gap-1.5 h-8">
+                  <Edit className="w-3.5 h-3.5" /> Edit
+                </Button>
+                <Button variant="destructive" size="sm" onClick={() => handleDelete(camp.id)} className="h-8 w-12 p-0 flex items-center justify-center">
+                  <Trash2 className="w-3.5 h-3.5" />
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        ))}
+
+        {campaigns.length === 0 && (
+          <div className="col-span-full py-20 text-center border-2 border-dashed border-border rounded-3xl bg-muted/30">
+            <Briefcase className="w-10 h-10 mx-auto text-muted-foreground mb-3" />
+            <h3 className="text-lg font-bold text-foreground">No campaigns found</h3>
+            <p className="text-muted-foreground text-sm mt-1">Create your first campaign to start assigning KOLs.</p>
+          </div>
+        )}
+      </div>
+
+      <Dialog open={modalMode !== null} onOpenChange={(open) => !open && setModalMode(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Briefcase className="text-indigo-500 w-5 h-5" />
+              {modalMode === "add" ? "New Campaign" : "Edit Campaign"}
+            </DialogTitle>
+          </DialogHeader>
+
+          <form onSubmit={handleSubmit} className="space-y-6 pt-4">
+            <div className="space-y-2">
+              <Label htmlFor="campaignName" className="text-xs uppercase tracking-wider text-muted-foreground">Campaign Name</Label>
+              <Input
+                id="campaignName"
+                required
+                placeholder="e.g. Summer Skincare Sale"
+                value={formName}
+                onChange={(e) => setFormName(e.target.value)}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="brandName" className="text-xs uppercase tracking-wider text-muted-foreground">Brand Name</Label>
+              <Input
+                id="brandName"
+                required
+                placeholder="e.g. Glow Beauty"
+                value={formBrand}
+                onChange={(e) => setFormBrand(e.target.value)}
+              />
+            </div>
+
+            <div className="flex gap-3 justify-end pt-2">
+              <Button type="button" variant="ghost" onClick={() => setModalMode(null)}>
+                Cancel
+              </Button>
+              <Button type="submit">
+                {modalMode === "add" ? "Create Campaign" : "Save Changes"}
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}

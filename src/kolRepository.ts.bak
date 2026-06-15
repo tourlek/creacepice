@@ -1,0 +1,913 @@
+import { Pool } from "pg";
+import { KOL, KOLPlatform, KOLStatus, Campaign } from "./types";
+import { INITIAL_KOLS, INITIAL_CAMPAIGNS } from "./data";
+
+const isProduction = process.env.NODE_ENV === "production";
+const databaseUrl = process.env.DATABASE_URL || process.env.DATABASE_URL_DEV;
+
+let pool: Pool | null = null;
+let useMemoryFallback = true;
+
+// In-memory normalized store
+let memoryCampaigns: Campaign[] = [...INITIAL_CAMPAIGNS];
+
+let memoryInfluencers: {
+  id: string;
+  name: string;
+  platform: KOLPlatform;
+  followers: number;
+  phone: string;
+  email: string;
+  lineId: string;
+  nickname: string;
+  address: string;
+  profileUrl: string;
+  behavioralRemark: string;
+  dealConditions: string;
+  baseClientPrice: number;
+  baseNetCost: number;
+}[] = [];
+
+let memoryAssignments: {
+  id: string;
+  influencerId: string;
+  campaignId: string;
+  status: KOLStatus;
+  clientPrice: number;
+  netCost: number;
+  profit: number;
+  draftDeadline: string;
+  liveDeadline: string;
+  draftLink: string;
+  liveLink: string;
+}[] = [];
+
+// Initialize memory store with INITIAL_KOLS
+INITIAL_KOLS.forEach((k, index) => {
+  const infId = `INF-${String(index + 1).padStart(3, "0")}`;
+  memoryInfluencers.push({
+    id: infId,
+    name: k.name,
+    platform: k.platform,
+    followers: k.followers,
+    phone: "",
+    email: "",
+    lineId: "",
+    nickname: "",
+    address: "",
+    profileUrl: k.profileUrl,
+    behavioralRemark: k.behavioralRemark,
+    dealConditions: k.dealConditions,
+    baseClientPrice: k.clientPrice || 0,
+    baseNetCost: k.netCost || 0
+  });
+  memoryAssignments.push({
+    id: k.id,
+    influencerId: infId,
+    campaignId: k.campaignId,
+    status: k.status,
+    clientPrice: k.clientPrice,
+    netCost: k.netCost,
+    profit: k.clientPrice - k.netCost,
+    draftDeadline: k.draftDeadline,
+    liveDeadline: k.liveDeadline,
+    draftLink: k.draftLink,
+    liveLink: k.liveLink
+  });
+});
+
+if (databaseUrl) {
+  try {
+    pool = new Pool({
+      connectionString: databaseUrl,
+      ssl: isProduction ? { rejectUnauthorized: false } : undefined,
+    });
+    useMemoryFallback = false;
+    console.log("PostgreSQL connection pool initialized.");
+  } catch (err) {
+    console.error("Failed to initialize PostgreSQL pool, falling back to memory:", err);
+    useMemoryFallback = true;
+  }
+} else {
+  console.warn("DATABASE_URL is not set. Running with in-memory fallback store.");
+}
+
+// Automatically create table if connected to DB
+export async function initializeDatabase() {
+  if (useMemoryFallback || !pool) return;
+
+  const createCampaignsTable = `
+    CREATE TABLE IF NOT EXISTS campaigns (
+      id VARCHAR(100) PRIMARY KEY,
+      name VARCHAR(255) NOT NULL,
+      brand VARCHAR(255) NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `;
+
+  const createInfluencersTable = `
+    CREATE TABLE IF NOT EXISTS influencers (
+      id VARCHAR(50) PRIMARY KEY,
+      name VARCHAR(255) UNIQUE NOT NULL,
+      platform VARCHAR(50) NOT NULL,
+      followers INT DEFAULT 0,
+      phone VARCHAR(100),
+      email VARCHAR(255),
+      line_id VARCHAR(255),
+      nickname VARCHAR(255),
+      address TEXT,
+      profile_url VARCHAR(500),
+      behavioral_remark TEXT,
+      deal_conditions TEXT,
+      base_client_price INT DEFAULT 0,
+      base_net_cost INT DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `;
+
+    CREATE TABLE IF NOT EXISTS campaign_kols (
+      id VARCHAR(50) PRIMARY KEY,
+      influencer_id VARCHAR(50) NOT NULL REFERENCES influencers(id) ON DELETE CASCADE,
+      campaign_id VARCHAR(100) NOT NULL,
+      status VARCHAR(100) NOT NULL,
+      platform VARCHAR(50) DEFAULT 'TIKTOK',
+      username VARCHAR(255),
+      profile_url VARCHAR(500),
+      followers INT DEFAULT 0,
+      client_price INT DEFAULT 0,
+      net_cost INT DEFAULT 0,
+      profit INT DEFAULT 0,
+      draft_deadline VARCHAR(50),
+      live_deadline VARCHAR(50),
+      draft_link VARCHAR(500),
+      live_link VARCHAR(500),
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `;
+
+  const createInfluencerSocialsTable = `
+    CREATE TABLE IF NOT EXISTS influencer_socials (
+      id VARCHAR(50) PRIMARY KEY,
+      influencer_id VARCHAR(50) NOT NULL REFERENCES influencers(id) ON DELETE CASCADE,
+      platform VARCHAR(50) NOT NULL,
+      username VARCHAR(255) NOT NULL,
+      profile_url VARCHAR(500),
+      followers INT DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(influencer_id, platform)
+    );
+  `;
+
+  try {
+    await pool.query(createCampaignsTable);
+    
+    // Attempt to create influencers table or alter it if missing columns
+    await pool.query(createInfluencersTable);
+    
+    // Add new columns if migrating from old influencers table
+    try {
+      await pool.query("ALTER TABLE influencers ADD COLUMN IF NOT EXISTS phone VARCHAR(100)");
+      await pool.query("ALTER TABLE influencers ADD COLUMN IF NOT EXISTS email VARCHAR(255)");
+      await pool.query("ALTER TABLE influencers ADD COLUMN IF NOT EXISTS line_id VARCHAR(255)");
+      await pool.query("ALTER TABLE influencers ADD COLUMN IF NOT EXISTS nickname VARCHAR(255)");
+      await pool.query("ALTER TABLE influencers ADD COLUMN IF NOT EXISTS address TEXT");
+      await pool.query("ALTER TABLE influencers ADD COLUMN IF NOT EXISTS base_client_price INT DEFAULT 0");
+      await pool.query("ALTER TABLE influencers ADD COLUMN IF NOT EXISTS base_net_cost INT DEFAULT 0");
+    } catch (err) {
+      console.log("Columns already exist or alter failed softly.", err);
+    }
+
+    await pool.query(createCampaignKolsTable);
+    
+    // Add new columns to campaign_kols if they don't exist
+    try {
+      await pool.query("ALTER TABLE campaign_kols ADD COLUMN IF NOT EXISTS platform VARCHAR(50) DEFAULT 'TIKTOK'");
+      await pool.query("ALTER TABLE campaign_kols ADD COLUMN IF NOT EXISTS username VARCHAR(255)");
+      await pool.query("ALTER TABLE campaign_kols ADD COLUMN IF NOT EXISTS profile_url VARCHAR(500)");
+      await pool.query("ALTER TABLE campaign_kols ADD COLUMN IF NOT EXISTS followers INT DEFAULT 0");
+    } catch(err) {}
+
+    await pool.query(createInfluencerSocialsTable);
+    
+    // Auto-migrate existing influencer platforms to the socials table
+    try {
+      await pool.query(`
+        INSERT INTO influencer_socials (id, influencer_id, platform, username, profile_url, followers)
+        SELECT gen_random_uuid()::varchar, id, platform, name, profile_url, followers
+        FROM influencers
+        ON CONFLICT (influencer_id, platform) DO NOTHING;
+      `);
+      
+      // Auto-migrate campaign_kols platform info from influencers
+      await pool.query(`
+        UPDATE campaign_kols ck
+        SET platform = i.platform,
+            username = i.name,
+            profile_url = i.profile_url,
+            followers = i.followers
+        FROM influencers i
+        WHERE ck.influencer_id = i.id AND ck.platform = 'TIKTOK' AND ck.username IS NULL;
+      `);
+    } catch(err) {
+      console.log("Migration of platforms failed softly", err);
+    }
+    console.log("Database tables 'campaigns', 'influencers' and 'campaign_kols' verified.");
+
+    // Seed campaigns if empty
+    const checkCampEmpty = await pool.query("SELECT COUNT(*) FROM campaigns");
+    if (parseInt(checkCampEmpty.rows[0].count, 10) === 0) {
+      console.log("Seeding campaigns table...");
+      for (const camp of INITIAL_CAMPAIGNS) {
+        await pool.query(
+          "INSERT INTO campaigns (id, name, brand) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING",
+          [camp.id, camp.name, camp.brand]
+        );
+      }
+    }
+
+    // Check if old 'kols' table exists and needs migration
+    const kolsExistCheck = await pool.query(`
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_schema = 'public' AND table_name = 'kols'
+      );
+    `);
+
+    if (kolsExistCheck.rows[0].exists) {
+      console.log("Old 'kols' table detected. Starting migration to normalized schema...");
+      
+      const oldKols = await pool.query("SELECT * FROM kols");
+      for (const row of oldKols.rows) {
+        // Find or create influencer
+        let infId = "";
+        const existingInf = await pool.query("SELECT id FROM influencers WHERE name = $1", [row.name]);
+        if (existingInf.rows.length > 0) {
+          infId = existingInf.rows[0].id;
+        } else {
+          infId = `INF-${String(Math.random()).substring(2, 8)}`;
+          await pool.query(`
+            INSERT INTO influencers (id, name, platform, followers, profile_url, behavioral_remark, deal_conditions, base_client_price, base_net_cost)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+          `, [infId, row.name, row.platform, row.followers, row.profile_url || "", row.behavioral_remark || "", row.deal_conditions || "", row.client_price || 0, row.net_cost || 0]);
+        }
+
+        // Insert assignment
+        await pool.query(`
+          INSERT INTO campaign_kols (id, influencer_id, campaign_id, status, client_price, net_cost, profit, draft_deadline, live_deadline, draft_link, live_link)
+          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          ON CONFLICT (id) DO NOTHING
+        `, [row.id, infId, row.campaign_id || "CAMP-001", row.status, row.client_price, row.net_cost, row.profit, row.draft_deadline, row.live_deadline, row.draft_link, row.live_link]);
+      }
+
+      // Rename old table to prevent repeating migration
+      await pool.query("ALTER TABLE kols RENAME TO kols_old");
+      console.log("Migration completed. Old table renamed to 'kols_old'.");
+    }
+
+    // Seed database if empty
+    const checkEmpty = await pool.query("SELECT COUNT(*) FROM campaign_kols");
+    if (parseInt(checkEmpty.rows[0].count, 10) === 0) {
+      console.log("Seeding normalized database with initial records...");
+      for (const kol of INITIAL_KOLS) {
+        await addKOL({
+          ...kol,
+          phone: "", email: "", lineId: "", nickname: "", address: "", baseClientPrice: kol.clientPrice, baseNetCost: kol.netCost
+        } as KOL);
+      }
+      console.log("Seeding complete.");
+    }
+  } catch (err) {
+    console.error("Error initializing database schema, falling back to memory:", err);
+    useMemoryFallback = true;
+  }
+}
+
+export async function getAllKOLs(): Promise<KOL[]> {
+  if (useMemoryFallback || !pool) {
+    return memoryAssignments.map(a => {
+      const inf = memoryInfluencers.find(i => i.id === a.influencerId);
+      return {
+        id: a.id,
+        influencerId: a.influencerId,
+        name: inf ? inf.name : "Unknown Influencer",
+        platform: inf ? inf.platform : KOLPlatform.TIKTOK,
+        followers: inf ? inf.followers : 0,
+        phone: inf ? inf.phone : "",
+        email: inf ? inf.email : "",
+        lineId: inf ? inf.lineId : "",
+        nickname: inf ? inf.nickname : "",
+        address: inf ? inf.address : "",
+        profileUrl: inf ? inf.profileUrl : "",
+        behavioralRemark: inf ? inf.behavioralRemark : "",
+        dealConditions: inf ? inf.dealConditions : "",
+        baseClientPrice: inf ? inf.baseClientPrice : 0,
+        baseNetCost: inf ? inf.baseNetCost : 0,
+        campaignId: a.campaignId,
+        status: a.status,
+        clientPrice: a.clientPrice,
+        netCost: a.netCost,
+        profit: a.profit,
+        draftDeadline: a.draftDeadline,
+        liveDeadline: a.liveDeadline,
+        draftLink: a.draftLink,
+        liveLink: a.liveLink
+      };
+    });
+  }
+
+  try {
+    const query = `
+      SELECT 
+        ck.id AS assignment_id,
+        ck.campaign_id,
+        ck.status,
+        ck.client_price,
+        ck.net_cost,
+        ck.profit,
+        ck.draft_deadline,
+        ck.live_deadline,
+        ck.draft_link,
+        ck.live_link,
+        inf.id AS influencer_id,
+        inf.name,
+        inf.platform,
+        inf.followers,
+        inf.phone,
+        inf.email,
+        inf.line_id,
+        inf.nickname,
+        inf.address,
+        inf.profile_url,
+        inf.behavioral_remark,
+        inf.deal_conditions,
+        inf.base_client_price,
+        inf.base_net_cost
+      FROM campaign_kols ck
+      LEFT JOIN influencers inf ON ck.influencer_id = inf.id
+      ORDER BY ck.id ASC
+    `;
+    const res = await pool.query(query);
+    return res.rows.map(row => ({
+      id: row.assignment_id,
+      influencerId: row.influencer_id,
+      name: row.name || "Unknown",
+      platform: (row.platform || KOLPlatform.TIKTOK) as KOLPlatform,
+      followers: parseInt(row.followers, 10) || 0,
+      phone: row.phone || "",
+      email: row.email || "",
+      lineId: row.line_id || "",
+      nickname: row.nickname || "",
+      address: row.address || "",
+      profileUrl: row.profile_url || "",
+      behavioralRemark: row.behavioral_remark || "",
+      dealConditions: row.deal_conditions || "",
+      baseClientPrice: parseInt(row.base_client_price, 10) || 0,
+      baseNetCost: parseInt(row.base_net_cost, 10) || 0,
+      campaignId: row.campaign_id,
+      status: row.status as KOLStatus,
+      clientPrice: parseInt(row.client_price, 10) || 0,
+      netCost: parseInt(row.net_cost, 10) || 0,
+      profit: parseInt(row.profit, 10) || 0,
+      draftDeadline: row.draft_deadline || "",
+      liveDeadline: row.live_deadline || "",
+      draftLink: row.draft_link || "",
+      liveLink: row.live_link || ""
+    }));
+  } catch (err) {
+    console.error("Failed to query normalized KOLs from database, using memory:", err);
+    return memoryAssignments.map(a => {
+      const inf = memoryInfluencers.find(i => i.id === a.influencerId);
+      return {
+        id: a.id,
+        influencerId: a.influencerId,
+        name: inf ? inf.name : "Unknown",
+        platform: inf ? inf.platform : KOLPlatform.TIKTOK,
+        followers: inf ? inf.followers : 0,
+        phone: inf ? inf.phone : "",
+        email: inf ? inf.email : "",
+        lineId: inf ? inf.lineId : "",
+        nickname: inf ? inf.nickname : "",
+        address: inf ? inf.address : "",
+        profileUrl: inf ? inf.profileUrl : "",
+        behavioralRemark: inf ? inf.behavioralRemark : "",
+        dealConditions: inf ? inf.dealConditions : "",
+        baseClientPrice: inf ? inf.baseClientPrice : 0,
+        baseNetCost: inf ? inf.baseNetCost : 0,
+        campaignId: a.campaignId,
+        status: a.status,
+        clientPrice: a.clientPrice,
+        netCost: a.netCost,
+        profit: a.profit,
+        draftDeadline: a.draftDeadline,
+        liveDeadline: a.liveDeadline,
+        draftLink: a.draftLink,
+        liveLink: a.liveLink
+      };
+    });
+  }
+}
+
+export async function addKOL(kol: KOL): Promise<KOL> {
+  if (useMemoryFallback || !pool) {
+    let influencer = memoryInfluencers.find(i => i.name.toLowerCase() === kol.name.toLowerCase());
+    if (!influencer) {
+      const infId = kol.influencerId || `INF-${String(memoryInfluencers.length + 1).padStart(3, "0")}`;
+      influencer = {
+        id: infId,
+        name: kol.name,
+        platform: kol.platform,
+        followers: kol.followers,
+        phone: kol.phone,
+        email: kol.email,
+        lineId: kol.lineId,
+        nickname: kol.nickname,
+        address: kol.address,
+        profileUrl: kol.profileUrl,
+        behavioralRemark: kol.behavioralRemark,
+        dealConditions: kol.dealConditions,
+        baseClientPrice: kol.baseClientPrice || kol.clientPrice,
+        baseNetCost: kol.baseNetCost || kol.netCost
+      };
+      memoryInfluencers.push(influencer);
+    } else {
+      influencer.platform = kol.platform;
+      influencer.followers = kol.followers;
+      influencer.phone = kol.phone;
+      influencer.email = kol.email;
+      influencer.lineId = kol.lineId;
+      influencer.nickname = kol.nickname;
+      influencer.address = kol.address;
+      influencer.profileUrl = kol.profileUrl;
+      influencer.behavioralRemark = kol.behavioralRemark;
+      influencer.dealConditions = kol.dealConditions;
+      influencer.baseClientPrice = kol.baseClientPrice !== undefined ? kol.baseClientPrice : influencer.baseClientPrice;
+      influencer.baseNetCost = kol.baseNetCost !== undefined ? kol.baseNetCost : influencer.baseNetCost;
+    }
+
+    const existingAssignIdx = memoryAssignments.findIndex(a => a.id === kol.id);
+    const assignment = {
+      id: kol.id,
+      influencerId: influencer.id,
+      campaignId: kol.campaignId,
+      status: kol.status,
+      clientPrice: kol.clientPrice,
+      netCost: kol.netCost,
+      profit: kol.clientPrice - kol.netCost,
+      draftDeadline: kol.draftDeadline,
+      liveDeadline: kol.liveDeadline,
+      draftLink: kol.draftLink,
+      liveLink: kol.liveLink
+    };
+
+    if (existingAssignIdx > -1) {
+      memoryAssignments[existingAssignIdx] = assignment;
+    } else {
+      memoryAssignments.push(assignment);
+    }
+
+    return {
+      ...kol,
+      influencerId: influencer.id,
+      profit: kol.clientPrice - kol.netCost
+    };
+  }
+
+  try {
+    const infQuery = `
+      INSERT INTO influencers (id, name, platform, followers, phone, email, line_id, nickname, address, profile_url, behavioral_remark, deal_conditions, base_client_price, base_net_cost)
+      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+      ON CONFLICT (name) DO UPDATE SET
+        platform = EXCLUDED.platform,
+        followers = EXCLUDED.followers,
+        phone = EXCLUDED.phone,
+        email = EXCLUDED.email,
+        line_id = EXCLUDED.line_id,
+        nickname = EXCLUDED.nickname,
+        address = EXCLUDED.address,
+        profile_url = EXCLUDED.profile_url,
+        behavioral_remark = EXCLUDED.behavioral_remark,
+        deal_conditions = EXCLUDED.deal_conditions,
+        base_client_price = EXCLUDED.base_client_price,
+        base_net_cost = EXCLUDED.base_net_cost,
+        updated_at = CURRENT_TIMESTAMP
+      RETURNING id;
+    `;
+    const infId = kol.influencerId || `INF-${String(Math.random()).substring(2, 8)}`;
+    const infRes = await pool.query(infQuery, [
+      infId,
+      kol.name,
+      kol.platform,
+      kol.followers,
+      kol.phone || "",
+      kol.email || "",
+      kol.lineId || "",
+      kol.nickname || "",
+      kol.address || "",
+      kol.profileUrl || "",
+      kol.behavioralRemark || "",
+      kol.dealConditions || "",
+      kol.baseClientPrice || kol.clientPrice,
+      kol.baseNetCost || kol.netCost
+    ]);
+    const actualInfluencerId = infRes.rows[0].id;
+
+    const assignQuery = `
+      INSERT INTO campaign_kols (
+        id, influencer_id, campaign_id, status, client_price, net_cost, profit, 
+        draft_deadline, live_deadline, draft_link, live_link
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      ON CONFLICT (id) DO UPDATE SET
+        influencer_id = EXCLUDED.influencer_id,
+        campaign_id = EXCLUDED.campaign_id,
+        status = EXCLUDED.status,
+        client_price = EXCLUDED.client_price,
+        net_cost = EXCLUDED.net_cost,
+        profit = EXCLUDED.profit,
+        draft_deadline = EXCLUDED.draft_deadline,
+        live_deadline = EXCLUDED.live_deadline,
+        draft_link = EXCLUDED.draft_link,
+        live_link = EXCLUDED.live_link,
+        updated_at = CURRENT_TIMESTAMP
+      RETURNING *;
+    `;
+    const assignValues = [
+      kol.id,
+      actualInfluencerId,
+      kol.campaignId,
+      kol.status,
+      kol.clientPrice,
+      kol.netCost,
+      kol.clientPrice - kol.netCost,
+      kol.draftDeadline,
+      kol.liveDeadline,
+      kol.draftLink,
+      kol.liveLink
+    ];
+
+    const assignRes = await pool.query(assignQuery, assignValues);
+    const row = assignRes.rows[0];
+
+    return {
+      id: row.id,
+      influencerId: actualInfluencerId,
+      name: kol.name,
+      platform: kol.platform,
+      followers: kol.followers,
+      phone: kol.phone,
+      email: kol.email,
+      lineId: kol.lineId,
+      nickname: kol.nickname,
+      address: kol.address,
+      profileUrl: kol.profileUrl,
+      behavioralRemark: kol.behavioralRemark,
+      dealConditions: kol.dealConditions,
+      baseClientPrice: kol.baseClientPrice,
+      baseNetCost: kol.baseNetCost,
+      campaignId: row.campaign_id,
+      status: row.status as KOLStatus,
+      clientPrice: parseInt(row.client_price, 10),
+      netCost: parseInt(row.net_cost, 10),
+      profit: parseInt(row.profit, 10),
+      draftDeadline: row.draft_deadline,
+      liveDeadline: row.live_deadline,
+      draftLink: row.draft_link,
+      liveLink: row.live_link
+    };
+  } catch (err) {
+    console.error("Failed to add/update normalized KOL in database:", err);
+    return kol;
+  }
+}
+
+export async function updateKOL(id: string, kol: Partial<KOL>): Promise<KOL | null> {
+  if (useMemoryFallback || !pool) {
+    const assignIndex = memoryAssignments.findIndex((a) => a.id === id);
+    if (assignIndex === -1) return null;
+    
+    const assign = { ...memoryAssignments[assignIndex] };
+    if (kol.campaignId !== undefined) assign.campaignId = kol.campaignId;
+    if (kol.status !== undefined) assign.status = kol.status;
+    if (kol.clientPrice !== undefined) assign.clientPrice = kol.clientPrice;
+    if (kol.netCost !== undefined) assign.netCost = kol.netCost;
+    if (kol.draftDeadline !== undefined) assign.draftDeadline = kol.draftDeadline;
+    if (kol.liveDeadline !== undefined) assign.liveDeadline = kol.liveDeadline;
+    if (kol.draftLink !== undefined) assign.draftLink = kol.draftLink;
+    if (kol.liveLink !== undefined) assign.liveLink = kol.liveLink;
+    assign.profit = assign.clientPrice - assign.netCost;
+    memoryAssignments[assignIndex] = assign;
+
+    const infIndex = memoryInfluencers.findIndex((i) => i.id === assign.influencerId);
+    if (infIndex !== -1) {
+      const inf = { ...memoryInfluencers[infIndex] };
+      if (kol.name !== undefined) inf.name = kol.name;
+      if (kol.platform !== undefined) inf.platform = kol.platform;
+      if (kol.followers !== undefined) inf.followers = kol.followers;
+      if (kol.phone !== undefined) inf.phone = kol.phone;
+      if (kol.email !== undefined) inf.email = kol.email;
+      if (kol.lineId !== undefined) inf.lineId = kol.lineId;
+      if (kol.nickname !== undefined) inf.nickname = kol.nickname;
+      if (kol.address !== undefined) inf.address = kol.address;
+      if (kol.profileUrl !== undefined) inf.profileUrl = kol.profileUrl;
+      if (kol.behavioralRemark !== undefined) inf.behavioralRemark = kol.behavioralRemark;
+      if (kol.dealConditions !== undefined) inf.dealConditions = kol.dealConditions;
+      if (kol.baseClientPrice !== undefined) inf.baseClientPrice = kol.baseClientPrice;
+      if (kol.baseNetCost !== undefined) inf.baseNetCost = kol.baseNetCost;
+      memoryInfluencers[infIndex] = inf;
+    }
+
+    const updatedInf = memoryInfluencers[infIndex];
+    return {
+      id: assign.id,
+      influencerId: assign.influencerId,
+      name: updatedInf ? updatedInf.name : "",
+      platform: updatedInf ? updatedInf.platform : KOLPlatform.TIKTOK,
+      followers: updatedInf ? updatedInf.followers : 0,
+      phone: updatedInf ? updatedInf.phone : "",
+      email: updatedInf ? updatedInf.email : "",
+      lineId: updatedInf ? updatedInf.lineId : "",
+      nickname: updatedInf ? updatedInf.nickname : "",
+      address: updatedInf ? updatedInf.address : "",
+      profileUrl: updatedInf ? updatedInf.profileUrl : "",
+      behavioralRemark: updatedInf ? updatedInf.behavioralRemark : "",
+      dealConditions: updatedInf ? updatedInf.dealConditions : "",
+      baseClientPrice: updatedInf ? updatedInf.baseClientPrice : 0,
+      baseNetCost: updatedInf ? updatedInf.baseNetCost : 0,
+      campaignId: assign.campaignId,
+      status: assign.status,
+      clientPrice: assign.clientPrice,
+      netCost: assign.netCost,
+      profit: assign.profit,
+      draftDeadline: assign.draftDeadline,
+      liveDeadline: assign.liveDeadline,
+      draftLink: assign.draftLink,
+      liveLink: assign.liveLink
+    };
+  }
+
+  try {
+    const assignQuery = await pool.query("SELECT influencer_id, client_price, net_cost FROM campaign_kols WHERE id = $1", [id]);
+    if (assignQuery.rows.length === 0) return null;
+    const influencerId = assignQuery.rows[0].influencer_id;
+
+    const assignFields: string[] = [];
+    const assignValues: any[] = [];
+    let assignIdx = 1;
+    const assignMapping: { [key: string]: string } = {
+      campaignId: "campaign_id",
+      status: "status",
+      clientPrice: "client_price",
+      netCost: "net_cost",
+      draftDeadline: "draft_deadline",
+      liveDeadline: "live_deadline",
+      draftLink: "draft_link",
+      liveLink: "live_link",
+    };
+
+    for (const key of Object.keys(kol)) {
+      if (assignMapping[key] !== undefined && (kol as any)[key] !== undefined) {
+        assignFields.push(`${assignMapping[key]} = $${assignIdx}`);
+        assignValues.push((kol as any)[key]);
+        assignIdx++;
+      }
+    }
+
+    if (assignFields.length > 0) {
+      if (kol.clientPrice !== undefined || kol.netCost !== undefined) {
+        const clientPrice = kol.clientPrice !== undefined ? kol.clientPrice : assignQuery.rows[0].client_price;
+        const netCost = kol.netCost !== undefined ? kol.netCost : assignQuery.rows[0].net_cost;
+        assignFields.push(`profit = $${assignIdx}`);
+        assignValues.push(clientPrice - netCost);
+        assignIdx++;
+      }
+
+      assignFields.push(`updated_at = CURRENT_TIMESTAMP`);
+      assignValues.push(id);
+      await pool.query(`
+        UPDATE campaign_kols 
+        SET ${assignFields.join(", ")}
+        WHERE id = $${assignIdx}
+      `, assignValues);
+    }
+
+    const infFields: string[] = [];
+    const infValues: any[] = [];
+    let infIdx = 1;
+    const infMapping: { [key: string]: string } = {
+      name: "name",
+      platform: "platform",
+      followers: "followers",
+      phone: "phone",
+      email: "email",
+      lineId: "line_id",
+      nickname: "nickname",
+      address: "address",
+      profileUrl: "profile_url",
+      behavioralRemark: "behavioral_remark",
+      dealConditions: "deal_conditions",
+      baseClientPrice: "base_client_price",
+      baseNetCost: "base_net_cost"
+    };
+
+    for (const key of Object.keys(kol)) {
+      if (infMapping[key] !== undefined && (kol as any)[key] !== undefined) {
+        infFields.push(`${infMapping[key]} = $${infIdx}`);
+        infValues.push((kol as any)[key]);
+        infIdx++;
+      }
+    }
+
+    if (infFields.length > 0) {
+      infFields.push(`updated_at = CURRENT_TIMESTAMP`);
+      infValues.push(influencerId);
+      await pool.query(`
+        UPDATE influencers 
+        SET ${infFields.join(", ")}
+        WHERE id = $${infIdx}
+      `, infValues);
+    }
+
+    const joinedRes = await pool.query(`
+      SELECT 
+        ck.id AS assignment_id,
+        ck.campaign_id,
+        ck.status,
+        ck.client_price,
+        ck.net_cost,
+        ck.profit,
+        ck.draft_deadline,
+        ck.live_deadline,
+        ck.draft_link,
+        ck.live_link,
+        inf.id AS influencer_id,
+        inf.name,
+        inf.platform,
+        inf.followers,
+        inf.phone,
+        inf.email,
+        inf.line_id,
+        inf.nickname,
+        inf.address,
+        inf.profile_url,
+        inf.behavioral_remark,
+        inf.deal_conditions,
+        inf.base_client_price,
+        inf.base_net_cost
+      FROM campaign_kols ck
+      LEFT JOIN influencers inf ON ck.influencer_id = inf.id
+      WHERE ck.id = $1
+    `, [id]);
+
+    if (joinedRes.rows.length === 0) return null;
+    const row = joinedRes.rows[0];
+    return {
+      id: row.assignment_id,
+      influencerId: row.influencer_id,
+      name: row.name || "Unknown",
+      platform: (row.platform || KOLPlatform.TIKTOK) as KOLPlatform,
+      followers: parseInt(row.followers, 10) || 0,
+      status: row.status as KOLStatus,
+      phone: row.phone || "",
+      email: row.email || "",
+      lineId: row.line_id || "",
+      nickname: row.nickname || "",
+      address: row.address || "",
+      clientPrice: parseInt(row.client_price, 10) || 0,
+      netCost: parseInt(row.net_cost, 10) || 0,
+      profit: parseInt(row.profit, 10) || 0,
+      behavioralRemark: row.behavioral_remark || "",
+      dealConditions: row.deal_conditions || "",
+      draftDeadline: row.draft_deadline || "",
+      liveDeadline: row.live_deadline || "",
+      draftLink: row.draft_link || "",
+      liveLink: row.live_link || "",
+      profileUrl: row.profile_url || "",
+      baseClientPrice: parseInt(row.base_client_price, 10) || 0,
+      baseNetCost: parseInt(row.base_net_cost, 10) || 0,
+      campaignId: row.campaign_id,
+    };
+  } catch (err) {
+    console.error(`Failed to update normalized KOL ${id} in database:`, err);
+    return null;
+  }
+}
+
+export async function deleteKOL(id: string): Promise<boolean> {
+  if (useMemoryFallback || !pool) {
+    const assignIndex = memoryAssignments.findIndex((a) => a.id === id);
+    if (assignIndex === -1) return false;
+    const assignment = memoryAssignments[assignIndex];
+    memoryAssignments.splice(assignIndex, 1);
+    
+    const hasOther = memoryAssignments.some(a => a.influencerId === assignment.influencerId);
+    if (!hasOther) {
+      memoryInfluencers = memoryInfluencers.filter(i => i.id !== assignment.influencerId);
+    }
+    return true;
+  }
+
+  try {
+    const getAssign = await pool.query("SELECT influencer_id FROM campaign_kols WHERE id = $1", [id]);
+    if (getAssign.rows.length === 0) return false;
+    const influencerId = getAssign.rows[0].influencer_id;
+
+    await pool.query("DELETE FROM campaign_kols WHERE id = $1", [id]);
+
+    const otherAssign = await pool.query("SELECT COUNT(*) FROM campaign_kols WHERE influencer_id = $1", [influencerId]);
+    if (parseInt(otherAssign.rows[0].count, 10) === 0) {
+      await pool.query("DELETE FROM influencers WHERE id = $1", [influencerId]);
+    }
+    return true;
+  } catch (err) {
+    console.error(`Failed to delete assignment ${id} from database:`, err);
+    return false;
+  }
+}
+
+// --- CAMPAIGN CRUD METHODS ---
+
+export async function getAllCampaigns(): Promise<Campaign[]> {
+  if (useMemoryFallback || !pool) {
+    return [...memoryCampaigns];
+  }
+  try {
+    const res = await pool.query("SELECT id, name, brand FROM campaigns ORDER BY created_at DESC");
+    return res.rows.map(r => ({ id: r.id, name: r.name, brand: r.brand }));
+  } catch (err) {
+    console.error("Failed to query campaigns from database, using memory:", err);
+    return [...memoryCampaigns];
+  }
+}
+
+export async function addCampaign(campaign: Campaign): Promise<Campaign> {
+  if (useMemoryFallback || !pool) {
+    const newCamp = { ...campaign, id: campaign.id || `CAMP-${String(memoryCampaigns.length + 1).padStart(3, "0")}` };
+    memoryCampaigns.push(newCamp);
+    return newCamp;
+  }
+  try {
+    const id = campaign.id || `CAMP-${String(Math.random()).substring(2, 8)}`;
+    const query = `
+      INSERT INTO campaigns (id, name, brand)
+      VALUES ($1, $2, $3)
+      RETURNING id, name, brand
+    `;
+    const res = await pool.query(query, [id, campaign.name, campaign.brand]);
+    return res.rows[0];
+  } catch (err) {
+    console.error("Failed to add campaign to database:", err);
+    return campaign;
+  }
+}
+
+export async function updateCampaign(id: string, updates: Partial<Campaign>): Promise<Campaign | null> {
+  if (useMemoryFallback || !pool) {
+    const index = memoryCampaigns.findIndex(c => c.id === id);
+    if (index === -1) return null;
+    memoryCampaigns[index] = { ...memoryCampaigns[index], ...updates };
+    return memoryCampaigns[index];
+  }
+  try {
+    const fields: string[] = [];
+    const values: any[] = [];
+    let idx = 1;
+
+    if (updates.name !== undefined) { fields.push(`name = $${idx++}`); values.push(updates.name); }
+    if (updates.brand !== undefined) { fields.push(`brand = $${idx++}`); values.push(updates.brand); }
+
+    if (fields.length === 0) return null;
+    fields.push(`updated_at = CURRENT_TIMESTAMP`);
+    values.push(id);
+
+    const query = `
+      UPDATE campaigns 
+      SET ${fields.join(", ")}
+      WHERE id = $${idx}
+      RETURNING id, name, brand
+    `;
+    const res = await pool.query(query, values);
+    return res.rows.length ? res.rows[0] : null;
+  } catch (err) {
+    console.error(`Failed to update campaign ${id} in database:`, err);
+    return null;
+  }
+}
+
+export async function deleteCampaign(id: string): Promise<boolean> {
+  if (useMemoryFallback || !pool) {
+    const index = memoryCampaigns.findIndex(c => c.id === id);
+    if (index === -1) return false;
+    memoryCampaigns.splice(index, 1);
+    return true;
+  }
+  try {
+    const res = await pool.query("DELETE FROM campaigns WHERE id = $1", [id]);
+    return (res.rowCount ?? 0) > 0;
+  } catch (err) {
+    console.error(`Failed to delete campaign ${id} from database:`, err);
+    return false;
+  }
+}

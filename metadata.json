@@ -1,0 +1,6 @@
+{
+  "name": "KOL Relationship Management",
+  "description": "ระบบบริหารจัดการข้อมูลอินฟลูเอนเซอร์และคัดกรองคุณภาพระดับมืออาชีพ พร้อมระบบบรีฟอัตโนมัติด้วย AI และเครื่องมือช่วยเหลือจัดระเบียบส่งมอบสัญญาครบวงจร",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
